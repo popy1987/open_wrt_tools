@@ -261,6 +261,14 @@ cwc -p -s
 
 ---
 
+## 许可证
+
+本项目采用 **[Unlicense](LICENSE)**（公有领域奉献）：可自由复制、修改、发布、商用或闭源再分发，**无需署名、无需开源衍生作品**。软件按「现状」提供，作者不承担担保责任。
+
+详情见 [unlicense.org](https://unlicense.org)。
+
+---
+
 ## 相关文档
 
 - **[BUILD.md](BUILD.md)** — OpenWrt SDK 交叉编译、libuci staging、上传与验证
