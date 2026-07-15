@@ -2,7 +2,7 @@
 
 **目标平台：Banana Pi BPI-R4 + BE14 · OpenWrt 25.12.5 · Ubuntu 20.04 交叉编译**
 
-C + **libuci** 二进制 **`cwc`**（Change Wi-Fi Channel），整合了 `change_wifi_channel.sh`（改信道）与 `detect_wifi_hw.sh`（硬件探测）。
+C + **libuci** 二进制 **`cwc`**（Change Wi-Fi Channel）：硬件/监管域探测与改信道合一，面向自动化与命令行部署。
 
 | 文件 | 说明 |
 |------|------|
@@ -12,8 +12,6 @@ C + **libuci** 二进制 **`cwc`**（Change Wi-Fi Channel），整合了 `change
 | `probe.c` / `probe.h` | 硬件 / 监管域只读探测 |
 | `Makefile` | OpenWrt SDK 交叉编译 |
 | `build.sh` | 一键编译（SDK 与脚本同目录） |
-
-**交互菜单** 仍建议用 `change_wifi_channel.sh`；二进制侧重 **自动化 / 少暴露源码**。
 
 ---
 
@@ -285,7 +283,7 @@ Ubuntu 的 `scp` **不需要** Windows Dropbear 下的 `-O` 参数。
 
 ```sh
 cwc -h
-cwc -p -s          # 硬件探测摘要（原 detect_wifi_hw.sh -s）
+cwc -p -s          # 硬件探测摘要
 cwc --status       # KEY=VALUE（脚本/自动化）
 cwc -l             # 改信道前状态
 cwc -r             # 国家码 / 信道参考表
@@ -414,21 +412,10 @@ sudo apt install -y gawk libncurses-dev
 
 - **不建议**。请固件与 SDK 小版本对齐；同系列内用 sysupgrade 升到 25.12.5 后再编。
 
-### 与 Shell 版并存
-
-| 能力 | `.sh` | C 二进制 |
-|------|-------|----------|
-| `-c/-i/-n/-y` 改信道 | ✓ | ✓ |
-| `-l` / `-r` | ✓ | ✓ |
-| 硬件探测 `-p/-s/-v` | `detect_wifi_hw.sh` | ✓ |
-| 交互菜单 | ✓ | 用 `.sh` |
-
-推荐路径：
+### 推荐安装路径
 
 ```text
-/usr/local/bin/cwc                      # C 二进制（短命令名）
-/usr/local/bin/change_wifi_channel.sh   # Shell 交互（可选）
-/usr/local/bin/detect_wifi_hw.sh        # Shell 探测（可选，已被 -p 取代）
+/usr/local/bin/cwc
 ```
 
 ---

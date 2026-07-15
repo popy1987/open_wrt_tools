@@ -1,6 +1,6 @@
 /*
  * cwc — Change Wi-Fi Channel (OpenWrt, libuci)
- * Short CLI binary; shell menu: change_wifi_channel.sh
+ * Probe hardware/regulatory domain and lock a single channel via UCI.
  */
 #include "reg.h"
 #include "probe.h"
@@ -204,7 +204,7 @@ static void print_help(void)
 {
 	puts(
 "Usage:\n"
-"  cwc -p                       Full HW probe (detect_wifi_hw)\n"
+"  cwc -p                       Full HW / regulatory probe\n"
 "  cwc -p -s                    Probe summary only\n"
 "  cwc --status                  KEY=VALUE status (machine-readable)\n"
 "  cwc -p -v                    Probe + verbose iw phy dumps\n"
@@ -419,7 +419,7 @@ int main(int argc, char **argv)
 
 	if (!radio || !channel) {
 		print_help();
-		puts("Interactive mode: use change_wifi_channel.sh (shell) for now.");
+		puts("Change channel: cwc -i <radio> -n <channel>   (optional -c CODE)");
 		puts("Read-only probe: cwc -p   (or -p -s / --status)");
 		wifi_uci_free();
 		return argc == 1 ? 0 : 1;
