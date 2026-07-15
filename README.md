@@ -28,6 +28,7 @@ open_wrt_tools/
 ├── Makefile                # OpenWrt SDK 交叉编译
 ├── build.sh                # 一键编译 / 安装
 ├── build_libuci_staging.sh # 向 SDK staging 安装 libuci
+├── test_all_channel.sh     # 屏蔽室全信道遍历（英文交互）
 ├── BUILD.md                # 构建与部署详解
 └── README.md               # 本文件（使用说明）
 ```
@@ -225,6 +226,26 @@ cwc -c CN -i radio1 -n 3 -y --no-reboot
 ```sh
 cwc -c JP -i radio2 -n 37 -y
 ```
+
+### 屏蔽室：全信道遍历（`test_all_channel.sh`）
+
+上传 `cwc` 与脚本后，在路由器上以 **root** 运行（交互与日志为英文）。国家码按频段固定（2.4→CN，5/6→US），**不用 `00`**。
+
+```sh
+chmod 755 /usr/local/bin/test_all_channel.sh
+# 先确认 radio↔band：cwc -p -s
+
+# 快速冒烟（跳过 5G DFS）
+test_all_channel.sh -y --skip-dfs
+
+# 只扫 5G DFS（CAC 较慢，可加大 --dfs-dwell）
+test_all_channel.sh -y --only-dfs --dfs-dwell 120
+
+# 全频段（耗时）
+test_all_channel.sh -y --log /tmp/cwc-sweep.log
+```
+
+常用选项：`--2g-only` / `--5g-only` / `--6g-only`、`--dry-run`、`--radio-5g radio1`。详见 `test_all_channel.sh -h`。
 
 ---
 
