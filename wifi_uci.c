@@ -1,9 +1,11 @@
 #include "wifi_uci.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -29,11 +31,65 @@ static void log_msg(const char *fmt, ...)
 	fputc('\n', stdout);
 }
 
+static void err_msg(const char *fmt, ...)
+{
+	va_list ap;
+
+	fputs("ERROR: ", stderr);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+}
+
+static void err_uci(const char *prefix)
+{
+	char *err = NULL;
+
+	if (!ctx) {
+		err_msg("%s (no uci context)", prefix);
+		return;
+	}
+	uci_get_errorstr(ctx, &err, prefix);
+	if (err) {
+		fprintf(stderr, "ERROR: %s\n", err);
+		free(err);
+	} else {
+		err_msg("%s", prefix);
+	}
+}
+
+/* system(3) result: 0 ok, -1 on failure (reason already on stderr). */
+static int run_cmd(const char *cmd, const char *what)
+{
+	int st = system(cmd);
+
+	if (st == 0)
+		return 0;
+	if (st < 0) {
+		err_msg("%s: system() failed: %s (cmd: %s)",
+			what, strerror(errno), cmd);
+		return -1;
+	}
+	if (WIFEXITED(st)) {
+		err_msg("%s failed (exit %d): %s",
+			what, WEXITSTATUS(st), cmd);
+	} else if (WIFSIGNALED(st)) {
+		err_msg("%s killed by signal %d: %s",
+			what, WTERMSIG(st), cmd);
+	} else {
+		err_msg("%s failed (status %d): %s", what, st, cmd);
+	}
+	return -1;
+}
+
 int wifi_uci_init(void)
 {
 	ctx = uci_alloc_context();
-	if (!ctx)
+	if (!ctx) {
+		err_msg("uci_alloc_context failed (out of memory?)");
 		return -1;
+	}
 	openlog("cwc", LOG_PID, LOG_USER);
 	return 0;
 }
@@ -49,8 +105,10 @@ void wifi_uci_free(void)
 
 static int load_wireless(struct uci_package **pkg)
 {
-	if (uci_load(ctx, "wireless", pkg) != UCI_OK)
+	if (uci_load(ctx, "wireless", pkg) != UCI_OK) {
+		err_uci("uci_load wireless");
 		return -1;
+	}
 	return 0;
 }
 
@@ -119,9 +177,27 @@ static int uci_set_str(const char *path, const char *val)
 	char buf[256];
 
 	snprintf(buf, sizeof buf, "%s=%s", path, val);
-	if (uci_lookup_ptr(ctx, &ptr, buf, true) != UCI_OK)
+	if (uci_lookup_ptr(ctx, &ptr, buf, true) != UCI_OK) {
+		err_uci(buf);
 		return -1;
-	return uci_set(ctx, &ptr);
+	}
+	if (uci_set(ctx, &ptr) != UCI_OK) {
+		err_uci(buf);
+		return -1;
+	}
+	return 0;
+}
+
+/* Best-effort delete / clear; no stderr on missing options. */
+static void uci_try_clear(const char *path)
+{
+	struct uci_ptr ptr;
+	char buf[256];
+
+	snprintf(buf, sizeof buf, "%s=", path);
+	if (uci_lookup_ptr(ctx, &ptr, buf, true) != UCI_OK)
+		return;
+	uci_set(ctx, &ptr);
 }
 
 int set_radio_country(const char *radio, const char *cc)
@@ -129,10 +205,10 @@ int set_radio_country(const char *radio, const char *cc)
 	char path[128];
 
 	snprintf(path, sizeof path, "wireless.%s.country", radio);
-	if (uci_set_str(path, cc) != UCI_OK)
+	if (uci_set_str(path, cc) != 0)
 		return -1;
 	snprintf(path, sizeof path, "wireless.%s.country_ie", radio);
-	uci_set_str(path, ""); /* delete if exists — ignore errors */
+	uci_try_clear(path);
 	return 0;
 }
 
@@ -142,20 +218,20 @@ int set_radio_single_channel(const char *radio, int ch)
 
 	snprintf(path, sizeof path, "wireless.%s.channel", radio);
 	snprintf(val, sizeof val, "%d", ch);
-	if (uci_set_str(path, val) != UCI_OK)
+	if (uci_set_str(path, val) != 0)
 		return -1;
 
 	snprintf(cmd, sizeof cmd,
 		 "while uci -q delete wireless.%s.channels 2>/dev/null; do :; done; "
 		 "uci add_list wireless.%s.channels=%d",
 		 radio, radio, ch);
-	if (system(cmd) != 0)
+	if (run_cmd(cmd, "set wireless channels list") != 0)
 		return -1;
 
 	snprintf(path, sizeof path, "wireless.%s.acs_chan_bias", radio);
-	uci_set_str(path, "");
+	uci_try_clear(path);
 	snprintf(path, sizeof path, "wireless.%s.acs_exclude_dfs", radio);
-	uci_set_str(path, "");
+	uci_try_clear(path);
 	return 0;
 }
 
@@ -164,7 +240,7 @@ int apply_country_reg(const char *cc)
 	char cmd[64];
 
 	snprintf(cmd, sizeof cmd, "iw reg set %s", cc);
-	if (system(cmd) != 0)
+	if (run_cmd(cmd, "iw reg set") != 0)
 		return -1;
 	log_msg("Regulatory domain: %s", cc);
 	return 0;
@@ -178,6 +254,7 @@ int commit_wireless(void)
 	if (load_wireless(&pkg) != 0)
 		return -1;
 	if (uci_commit(ctx, &pkg, false) != UCI_OK) {
+		err_uci("uci commit wireless");
 		uci_unload(ctx, pkg);
 		return -1;
 	}
@@ -188,7 +265,7 @@ int commit_wireless(void)
 int reload_wifi(void)
 {
 	log_msg("wifi reload ...");
-	if (system("wifi reload") != 0)
+	if (run_cmd("wifi reload", "wifi reload") != 0)
 		return -1;
 	sleep(3);
 	return 0;
@@ -198,7 +275,9 @@ int do_reboot(void)
 {
 	log_msg("Rebooting router ...");
 	sleep(1);
-	return system("reboot");
+	if (run_cmd("reboot", "reboot") != 0)
+		return -1;
+	return 0;
 }
 
 int infer_country_for_plan(struct app_state *st, char *out_cc, size_t n)
@@ -253,10 +332,25 @@ int stage_wifi_plan(struct app_state *st, const char *cc, int infer)
 	st->applied_country[0] = '\0';
 
 	if (infer || !cc || !*cc) {
-		if (infer_country_for_plan(st, use_cc, sizeof use_cc) != 0)
+		if (infer_country_for_plan(st, use_cc, sizeof use_cc) != 0) {
+			err_msg("cannot infer country for plan (tried CN, JP, US, DE)");
+			for (i = 0; i < st->plan_count; i++) {
+				band_t b = radio_band(st->plan[i].radio);
+				char raw[32];
+
+				radio_band_raw(st->plan[i].radio, raw, sizeof raw);
+				err_msg("  plan: %s band=%s (UCI:%s) ch=%d",
+					st->plan[i].radio,
+					b == BAND_2G ? "2g" :
+					b == BAND_5G ? "5g" :
+					b == BAND_6G ? "6g" : "?",
+					raw, st->plan[i].channel);
+			}
+			err_msg("hint: pass -c CODE explicitly");
 			return -1;
+		}
 		st->country_inferred = 1;
-		log_msg("Country omitted -> inferred: %s (priority CN->JP->US->EU)", use_cc);
+		log_msg("Country omitted -> inferred: %s (priority CN->JP->US->DE)", use_cc);
 	} else {
 		strncpy(use_cc, cc, sizeof use_cc - 1);
 		use_cc[sizeof use_cc - 1] = '\0';
@@ -273,11 +367,24 @@ int stage_wifi_plan(struct app_state *st, const char *cc, int infer)
 		return -3;
 
 	nr = list_radios(radios, MAX_RADIOS);
-	for (i = 0; i < nr; i++)
-		set_radio_country(radios[i], use_cc);
+	if (nr <= 0)
+		fprintf(stderr,
+			"WARNING: no wifi-device sections found in wireless config\n");
+
+	for (i = 0; i < nr; i++) {
+		if (set_radio_country(radios[i], use_cc) != 0) {
+			err_msg("failed to set country=%s on %s", use_cc, radios[i]);
+			return -4;
+		}
+	}
 
 	for (i = 0; i < st->plan_count; i++) {
-		set_radio_single_channel(st->plan[i].radio, st->plan[i].channel);
+		if (set_radio_single_channel(st->plan[i].radio,
+					     st->plan[i].channel) != 0) {
+			err_msg("failed to lock %s to channel %d",
+				st->plan[i].radio, st->plan[i].channel);
+			return -5;
+		}
 		log_msg("Single channel: %s -> ch=%d only (channels=[%d])",
 			st->plan[i].radio, st->plan[i].channel,
 			st->plan[i].channel);

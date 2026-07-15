@@ -7,6 +7,8 @@
 #include "wifi_uci.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,18 @@ static struct app_state app;
 static void die(const char *msg)
 {
 	fprintf(stderr, "ERROR: %s\n", msg);
+	exit(1);
+}
+
+static void dief(const char *fmt, ...)
+{
+	va_list ap;
+
+	fputs("ERROR: ", stderr);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
 	exit(1);
 }
 
@@ -197,7 +211,8 @@ static void need_cmd(const char *cmd)
 
 	snprintf(buf, sizeof buf, "command -v %s >/dev/null 2>&1", cmd);
 	if (system(buf) != 0)
-		die("missing command on PATH (install via opkg)");
+		dief("missing command on PATH: '%s' (try: opkg update && opkg install %s)",
+		     cmd, cmd);
 }
 
 static void print_help(void)
@@ -242,9 +257,9 @@ static void finalize(void)
 		exit(0);
 	}
 	if (commit_wireless() != 0)
-		die("uci commit failed");
+		die("aborting: uci commit wireless failed (see ERROR above)");
 	if (reload_wifi() != 0)
-		die("wifi reload failed");
+		die("aborting: wifi reload failed (see ERROR above)");
 	show_detail_status("Applied (after commit + wifi reload)");
 	if (plan_has_cac()) {
 		puts("");
@@ -267,7 +282,8 @@ static void finalize(void)
 		puts("No reboot. Config committed.");
 		return;
 	}
-	do_reboot();
+	if (do_reboot() != 0)
+		die("aborting: reboot failed (see ERROR above)");
 }
 
 static void run_cli(const char *country, int country_set, const char *radio,
@@ -283,10 +299,21 @@ static void run_cli(const char *country, int country_set, const char *radio,
 	app.plan[0].channel = channel;
 	band = radio_band(radio);
 
+	if (band == BAND_UNKNOWN) {
+		char raw[32];
+
+		radio_band_raw(radio, raw, sizeof raw);
+		dief("cannot determine band for %s (UCI band/hwmode=%s); "
+		     "check: cwc -p -s  and wireless config",
+		     radio, raw);
+	}
+
 	if (infer) {
 		if (infer_country_from_channel(band, channel, use_cc,
 					       sizeof use_cc) != 0)
-			die("cannot infer country from channel (order: CN JP US DE)");
+			dief("cannot infer country for %s band=%s ch=%d "
+			     "(tried CN, JP, US, DE); pass -c CODE",
+			     radio, band_name(band), channel);
 	} else {
 		strncpy(use_cc, country, sizeof use_cc - 1);
 		use_cc[sizeof use_cc - 1] = '\0';
@@ -295,18 +322,27 @@ static void run_cli(const char *country, int country_set, const char *radio,
 	}
 
 	if (!confirm_dfs(use_cc, band, channel, radio))
-		die("cancelled: DFS/CAC channel not confirmed");
+		dief("cancelled: DFS/CAC ch=%d on %s (band=%s) not confirmed",
+		     channel, radio, band_name(band));
 
-	if (!confirm_6g_if_needed(use_cc, band, channel, radio))
-		die("cancelled: 6 GHz channel not confirmed");
+	if (!confirm_6g_if_needed(use_cc, band, channel, radio)) {
+		if (cn_6g_prohibited(use_cc, band))
+			die_band_mismatch(use_cc, radio, band, channel);
+		dief("cancelled: 6 GHz ch=%d on %s not confirmed",
+		     channel, radio);
+	}
 
 	rc = stage_wifi_plan(&app, country_set ? country : NULL, infer);
 	if (rc == -1)
-		die("cannot infer country for plan");
+		die("aborting: country inference failed (see ERROR above)");
 	if (rc == -2)
 		die_band_mismatch(use_cc, radio, band, channel);
 	if (rc == -3)
-		die("iw reg set failed (need root?)");
+		die("aborting: iw reg set failed (see ERROR above; need root?)");
+	if (rc == -4)
+		die("aborting: failed to set country on radios (see ERROR above)");
+	if (rc == -5)
+		die("aborting: failed to lock radio channel (see ERROR above)");
 
 	print_plan_warnings(app.applied_country);
 	finalize();
@@ -364,40 +400,41 @@ int main(int argc, char **argv)
 		}
 		if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--country")) {
 			if (++i >= argc)
-				die("-c requires argument");
+				die("-c/--country requires a country code (e.g. CN)");
 			country = argv[i];
 			country_set = 1;
 			continue;
 		}
 		if (!strcmp(argv[i], "-i") || !strcmp(argv[i], "--radio")) {
 			if (++i >= argc)
-				die("-i requires argument");
+				die("-i/--radio requires a wifi-device name (e.g. radio1)");
 			radio = argv[i];
 			continue;
 		}
 		if (!strcmp(argv[i], "-n") || !strcmp(argv[i], "--channel")) {
 			if (++i >= argc)
-				die("-n requires argument");
+				die("-n/--channel requires a numeric channel");
 			channel = atoi(argv[i]);
 			if (channel <= 0)
-				die("invalid channel");
+				dief("invalid channel '%s' (need positive number, not auto)",
+				     argv[i]);
 			continue;
 		}
-		die("unknown option (use -h)");
+		dief("unknown option '%s' (use -h)", argv[i]);
 	}
 
 	if (geteuid() != 0)
-		die("run as root");
+		die("run as root (SSH as root, or use sudo)");
 
 	need_cmd("uci");
 	need_cmd("iw");
 	need_cmd("wifi");
 
 	if (access("/etc/config/wireless", R_OK) != 0)
-		die("/etc/config/wireless not found");
+		dief("/etc/config/wireless not readable: %s", strerror(errno));
 
 	if (wifi_uci_init() != 0)
-		die("uci_alloc_context failed");
+		die("aborting: uci init failed (see ERROR above)");
 
 	if (probe_status && !(radio && channel)) {
 		probe_print_status();
